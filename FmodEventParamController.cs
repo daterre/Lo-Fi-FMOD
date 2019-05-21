@@ -15,10 +15,19 @@ namespace LoFiPeople.FMOD
 	public class FmodEventParamController: MonoBehaviour
 	{
 		public string ParamName;
+		FmodEventController _ev;
 
 		public void SetValue(float value)
 		{
-			GetComponentInChildren<FmodEventController>().Event[ParamName] = value;
+			if (_ev == null)
+				_ev = GetComponentInChildren<FmodEventController>();
+			if (_ev == null)
+			{
+				UnityEngine.Debug.LogError("No FmodEventController found on this object or any of its children.");
+				return;
+			}
+
+			_ev.Event[ParamName] = value;
 		}
 	}
 }
