@@ -1,0 +1,10 @@
+{
+    "name": "LoFiPeople.FMOD",
+    "references": [
+        "FMOD"
+    ],
+    "optionalUnityReferences": [],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false
+}
