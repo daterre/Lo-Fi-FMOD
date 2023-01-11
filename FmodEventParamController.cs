@@ -23,7 +23,7 @@ namespace LoFiPeople.FMOD
 				_ev = GetComponentInChildren<FmodEventController>();
 			if (_ev == null)
 			{
-				UnityEngine.Debug.LogError("No FmodEventController found on this object or any of its children.");
+				UnityEngine.Debug.LogError("[FMOD] No FmodEventController found on this object or any of its children.");
 				return;
 			}
 

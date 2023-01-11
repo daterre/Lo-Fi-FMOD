@@ -16,6 +16,14 @@ namespace LoFiPeople.FMOD
 			return wrapper.array;
 		}
 
+		public static string SerializeArray<T>(T[] arr)
+		{
+			Wrapper<T> wrapper = new Wrapper<T>() { array = arr };
+			string json = JsonUtility.ToJson(wrapper);
+			int openBracket = json.IndexOf('[');
+			return json.Substring(openBracket, json.LastIndexOf(']') - openBracket + 1);
+		}
+
 		[System.Serializable]
 		private class Wrapper<T>
 		{

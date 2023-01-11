@@ -14,86 +14,43 @@ namespace LoFiPeople.FMOD
 {
 	public class FmodEventController: MonoBehaviour
 	{
-		[FMODUnity.EventRef] public string[] EventPaths;
+		[FMODUnity.EventRef] public string EventPath;
 		public bool StartAutomatically = false;
-		public FmodEvent[] Events { get; private set; }
-		public FmodEvent Event => Events[0];
+		public FmodEvent Event { get; private set; }
 
 		private void Awake()
 		{
-			Events = new FmodEvent[EventPaths.Length];
-			for (int i = 0; i < Events.Length; i++)
-				Events[i] = new FmodEvent(EventPaths[i]).LoadMarkers();
+			Event = new FmodEvent(EventPath)
+				.LoadMarkers();
 		}
 
-		void Start()
+		private void Start()
 		{
 			if (StartAutomatically)
-				StartEvents();
+				Event.Start();
 		}
 
-		public void StartEvents()
+		private void Update()
 		{
-			for (int i = 0; i < Events.Length; i++)
-				Events[i].Start();
+			if (Event != null && Event.IsValid)
+				Event.Position = transform.position;
 		}
 
-		public void StopEvents(bool release)
+		private void OnDestroy()
 		{
-			for (int i = 0; i < Events.Length; i++)
-				if (Events[i] != null && Events[i].IsValid)
-				{
-					Events[i].Stop();
-					if (release)
-						Events[i].Release();
-				}
-		}
-
-		public void ReleaseEvents()
-		{
-			for (int i = 0; i < Events.Length; i++)
-				if (Events[i] != null && Events[i].IsValid)
-				{
-					Events[i].Release();
-				}
-		}
-
-		void Update()
-		{
-			for (int i = 0; i < Events.Length; i++)
-				if (Events[i] != null && Events[i].IsValid)
-					Events[i].Position = transform.position;
-		}
-
-		void OnDestroy()
-		{
-			StopEvents(true);
+			if (Event != null && Event.IsValid)
+				Event.Stop().Release();
 		}
 
 		public void JumpTo(string marker)
 		{
-			int appliedTo = 0;
-			for (int i = 0; i < Events.Length; i++)
+			if (Event == null || !Event.IsValid)
 			{
-				if (Events[i] == null || !Events[i].IsValid || !Events[i].HasMarker(marker))
-					continue;
-
-				appliedTo++;
-				Events[i].JumpToMarker(marker);
+				UnityEngine.Debug.LogError("[FMOD] Event is not playing, can't jump to marker");
+				return;
 			}
 
-			if (appliedTo < 1)
-				UnityEngine.Debug.LogError("Marker was not applied to any events");
-		}
-
-		public float this[string paramName]
-		{
-			set
-			{
-				for (int i = 0; i < Events.Length; i++)
-					if (Events[i] != null && Events[i].IsValid)
-						Events[i][paramName] = value;
-			}
+			Event.JumpToMarker(marker);
 		}
 	}
 }

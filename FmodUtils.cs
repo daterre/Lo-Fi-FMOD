@@ -12,15 +12,16 @@ using FMODUnity;
 
 namespace LoFiPeople.FMOD
 {
-	public class FmodUtils
+	public static class FmodUtils
 	{
-		public static void Check(RESULT result, string error = "Action returned error.", string path = null, FmodSeverity severity = FmodSeverity.Exception)
+		static Func<string,string> _defaultError = (p) => "Action returned error.";
+		public static void Check(RESULT result, Func<string,string> error = null, string errorParam = null, string path = null, FmodSeverity severity = FmodSeverity.Exception)
 		{
 			if (result == RESULT.OK)
 				return;
 
-			string msg = string.Format("FMOD: {0} ({1})",
-				error,
+			string msg = string.Format("[FMOD] {0} ({1})",
+				(error == null ? _defaultError : error).Invoke(errorParam),
 				result);
 
 			if (path != null)
@@ -34,7 +35,7 @@ namespace LoFiPeople.FMOD
 				UnityEngine.Debug.LogWarning(msg);
 
 		}
-
+		/*
 		public static global::FMOD.Sound CreateSound(int sampleSize, int channels = 1, int sampleRate = 44100)
 		{
 			// Explicitly create the delegate object and assign it to a member so it doesn't get freed
@@ -57,6 +58,7 @@ namespace LoFiPeople.FMOD
 			FmodUtils.Check(FMODUnity.RuntimeManager.LowlevelSystem.createSound(string.Empty, global::FMOD.MODE.OPENUSER | global::FMOD.MODE.LOOP_NORMAL, ref soundInfo, out sound));
 			return sound;
 		}
+		*/
 	}
 
 

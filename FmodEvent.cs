@@ -20,11 +20,18 @@ namespace LoFiPeople.FMOD
 
 		event Action<FmodEvent> _onPlayStateChanged;
 		event Action<FmodEvent, string> _onMarker;
+		event Action<FmodEvent, string> _onSoundPlayed;
+		event Action<FmodEvent, string> _onSoundStopped;
 		event Func<FmodEvent, string, Sound> _onProgrammerSoundCreated;
 
 		global::FMOD.Studio.EVENT_CALLBACK _callbackSink = null;
 		Dictionary<string, int> _markers = null;
-        bool _markersLoaded = false;
+		bool _markersLoaded = false;
+
+		#if ENABLE_IL2CPP
+		// Necessary because callbacks can only be static on AOT platforms
+		static Dictionary<IntPtr, FmodEvent> _callbacks = new Dictionary<IntPtr, FmodEvent>();
+		#endif
 
 		public event Action<FmodEvent> OnPlayStateChanged
 		{
@@ -42,10 +49,35 @@ namespace LoFiPeople.FMOD
 			remove { _onProgrammerSoundCreated -= value; DisableCallbacks(); }
 		}
 
+		public event Action<FmodEvent, string> OnSoundPlayed
+		{
+			add { _onSoundPlayed += value; EnableCallbacks(); }
+			remove { _onSoundPlayed -= value; DisableCallbacks(); }
+		}
+
+		public event Action<FmodEvent, string> OnSoundStopped
+		{
+			add { _onSoundStopped += value; EnableCallbacks(); }
+			remove { _onSoundStopped -= value; DisableCallbacks(); }
+		}
+
 		void EnableCallbacks()
 		{
-			if (_onPlayStateChanged == null && _onMarker == null && _onProgrammerSoundCreated == null)
+			if (_onPlayStateChanged == null &&
+				_onMarker == null &&
+				_onSoundPlayed == null &&
+				_onSoundStopped == null &&
+				_onProgrammerSoundCreated == null
+				)
 				return;
+
+#if ENABLE_IL2CPP
+			lock (_callbacks)
+			{
+				if (!_callbacks.ContainsKey(this.Instance.handle))
+					_callbacks[this.Instance.handle] = this;
+			}
+#endif
 
 			if (_callbackSink == null)
 			{
@@ -57,44 +89,99 @@ namespace LoFiPeople.FMOD
 					EVENT_CALLBACK_TYPE.STOPPED |
 					EVENT_CALLBACK_TYPE.START_FAILED |
 					EVENT_CALLBACK_TYPE.TIMELINE_MARKER |
-					EVENT_CALLBACK_TYPE.CREATE_PROGRAMMER_SOUND
+					EVENT_CALLBACK_TYPE.CREATE_PROGRAMMER_SOUND |
+					EVENT_CALLBACK_TYPE.SOUND_PLAYED |
+					EVENT_CALLBACK_TYPE.SOUND_STOPPED
 					),
-					"Failed to set callback.");
+					(p) => "Failed to set callback.");
 			}
 		}
-		
+
 		void DisableCallbacks()
 		{
 			if (_onPlayStateChanged != null || _onMarker != null || _onProgrammerSoundCreated != null)
 				return;
 
+			#if ENABLE_IL2CPP
+			lock (_callbacks)
+				_callbacks.Remove(this.Instance.handle);
+			#endif
+
 			if (_callbackSink != null)
 			{
 				Do(Instance.setCallback(null),
-					"Failed to unset callback.");
+					(p) => "Failed to unset callback.");
 				_callbackSink = null;
 			}
 		}
 
-		[AOT.MonoPInvokeCallbackAttribute(typeof(global::FMOD.Studio.EVENT_CALLBACK))]
-		global::FMOD.RESULT FmodEventCallback(global::FMOD.Studio.EVENT_CALLBACK_TYPE type, global::FMOD.Studio.EventInstance instance, IntPtr parameterPtr)
+#if ENABLE_IL2CPP
+		[AOT.MonoPInvokeCallback(typeof(global::FMOD.Studio.EVENT_CALLBACK))]
+		static global::FMOD.RESULT FmodEventCallback(global::FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr instance, IntPtr parameterPtr)
 		{
-			switch(type)
+			if (!new EventInstance(instance).isValid())
+			{
+				UnityEngine.Debug.LogError("[FMOD] Received callback from invalid event instance.");
+				return RESULT.OK;
+			}
+
+			FmodEvent ev;
+			lock (_callbacks)
+			{
+				if (!_callbacks.TryGetValue(instance, out ev))
+				{
+					UnityEngine.Debug.LogError($"[FMOD] Received callback {type} from unknown event instance.");
+					return RESULT.OK;
+				}
+			}
+			return FmodEventCallbackHandler(type, parameterPtr, ev);
+		}
+
+#else
+		[AOT.MonoPInvokeCallback(typeof(global::FMOD.Studio.EVENT_CALLBACK))]
+		global::FMOD.RESULT FmodEventCallback(global::FMOD.Studio.EVENT_CALLBACK_TYPE type, IntPtr instance, IntPtr parameterPtr)
+		{
+			return FmodEventCallbackHandler(type, parameterPtr, this);
+		}
+#endif
+
+		static RESULT FmodEventCallbackHandler(EVENT_CALLBACK_TYPE type, IntPtr parameterPtr, FmodEvent ev)
+		{
+			if (ev == null)
+			{
+				UnityEngine.Debug.LogError($"[FMOD] Received callback {type} from unknown event instance.");
+				return RESULT.OK;
+			}
+
+			switch (type)
 			{
 				case EVENT_CALLBACK_TYPE.TIMELINE_MARKER:
-					if (_onMarker != null)
+					if (ev._onMarker != null)
 					{
 						var parameter = (TIMELINE_MARKER_PROPERTIES)Marshal.PtrToStructure(parameterPtr, typeof(TIMELINE_MARKER_PROPERTIES));
-						_onMarker.Invoke(this, parameter.name);
+						ev._onMarker.Invoke(ev, parameter.name);
+					}
+					break;
+				case EVENT_CALLBACK_TYPE.SOUND_PLAYED:
+					if (ev._onSoundPlayed != null)
+					{
+						if (new Sound(parameterPtr).getName(out string soundName, 512) == RESULT.OK)
+							ev._onSoundPlayed.Invoke(ev, soundName);
+					}
+					break;
+				case EVENT_CALLBACK_TYPE.SOUND_STOPPED:
+					if (ev._onSoundStopped != null)
+					{
+						if (new Sound(parameterPtr).getName(out string soundName, 512) == RESULT.OK)
+							ev._onSoundStopped.Invoke(ev, soundName);
 					}
 					break;
 				case EVENT_CALLBACK_TYPE.CREATE_PROGRAMMER_SOUND:
-					if (_onProgrammerSoundCreated != null)
+					if (ev._onProgrammerSoundCreated != null)
 					{
-						UnityEngine.Debug.Log("CREATE_PROGRAMMER_SOUND");
 						var parameter = (PROGRAMMER_SOUND_PROPERTIES)Marshal.PtrToStructure(parameterPtr, typeof(PROGRAMMER_SOUND_PROPERTIES));
 
-						Sound sound = _onProgrammerSoundCreated.Invoke(this, parameter.name);
+						Sound sound = ev._onProgrammerSoundCreated.Invoke(ev, parameter.name);
 						if (sound.hasHandle())
 						{
 							parameter.sound = sound.handle;
@@ -104,9 +191,14 @@ namespace LoFiPeople.FMOD
 					}
 					break;
 				default:
-					if (_onPlayStateChanged != null)
+					try
 					{
-						_onPlayStateChanged.Invoke(this);
+						if (ev._onPlayStateChanged != null)
+							ev._onPlayStateChanged.Invoke(ev);
+					}
+					catch (NullReferenceException)
+					{
+						UnityEngine.Debug.Log("[FMOD] Something is null here, not sure what.");
 					}
 					break;
 			}
@@ -118,7 +210,7 @@ namespace LoFiPeople.FMOD
 			EventPath = fmodEventPath;
 			Instance = FMODUnity.RuntimeManager.CreateInstance(fmodEventPath);
 			Do(Instance.getDescription(out Description),
-				"Failed to get event description."
+				(p) => "Failed to get event description."
 			);
 		}
 
@@ -127,11 +219,15 @@ namespace LoFiPeople.FMOD
 			if (!Instance.isValid())
 				return;
 
-			Do(Instance.setCallback(null, EVENT_CALLBACK_TYPE.ALL), "Failed to remove car callback");
+			Do(Instance.setCallback(null, EVENT_CALLBACK_TYPE.ALL), (p) => "Failed to remove callback");
 			_callbackSink = null;
 
-			Do(Instance.release(),
-				"Failed to release event instance.");
+			#if ENABLE_IL2CPP
+			lock (_callbacks)
+				_callbacks.Remove(this.Instance.handle);
+			#endif
+
+			Do(Instance.release(), (p) => "Failed to release event instance.");
 		}
 
 		void IDisposable.Dispose()
@@ -139,10 +235,29 @@ namespace LoFiPeople.FMOD
 			this.Release();
 		}
 
+		~FmodEvent()
+		{
+			this.Release();
+		}
+
+		public float Time
+		{
+			get => this.TimeMilliseconds / 1000f;
+			set => this.TimeMilliseconds = Mathf.RoundToInt(value * 1000);
+		}
+
 		public int TimeMilliseconds
 		{
-			//get { throw new NotImplementedException(); }
-			set { Do(Instance.setTimelinePosition(value), "Failed to set timeline"); }
+			get
+			{
+				int ms;
+				Do(Instance.getTimelinePosition(out ms), (p) => "Failed to get timeline position");
+				return ms;
+			}
+			set
+			{
+				Do(Instance.setTimelinePosition(value), (p) => "Failed to set timeline position");
+			}
 		}
 
 		public PLAYBACK_STATE PlaybackState
@@ -151,10 +266,11 @@ namespace LoFiPeople.FMOD
 			{
 				PLAYBACK_STATE state;
 				Do(Instance.getPlaybackState(out state),
-					"Failed to get playback state.");
+					(p) => "Failed to get playback state.");
 				return state;
 			}
 		}
+
 
 		public Vector3 Position
 		{
@@ -178,53 +294,74 @@ namespace LoFiPeople.FMOD
 
 		public float Length
 		{
+			get => LengthMilliseconds / 1000f;
+		}
+
+		public int LengthMilliseconds
+		{
 			get
 			{
 				int length = 0;
-				Do(Description.getLength(out length), "Failed to get event timeline length.");
-				return length / 1000f;
+				Do(Description.getLength(out length), (p) => "Failed to get event timeline length.");
+				return length;
 			}
 		}
 
 		public FmodEvent Start()
 		{
-			Do(Instance.start(), "Failed to start event.");
+			Do(Instance.start(), (p) => "Failed to start event.");
 			return this;
 		}
 
 		public FmodEvent Pause()
 		{
-			Do(Instance.setPaused(true),
-				"Failed to pause event.");
+			IsPaused = true;
 			return this;
+		}
+
+
+		public bool IsPaused
+		{
+			get
+			{
+				bool paused = false;
+				Do(Instance.getPaused(out paused),
+					(p) => "Failed to check if event is paused.");
+				return paused;
+			}
+			set
+			{
+				Do(Instance.setPaused(value),
+					(p) => "Failed to change pause state.");
+			}
 		}
 
 		public FmodEvent Resume()
 		{
 			Do(Instance.setPaused(false),
-				"Failed to resume event.");
+				(p) => "Failed to resume event.");
 			return this;
 		}
 
 		public FmodEvent Stop(bool hard = false)
 		{
 			Do(Instance.stop(hard ? global::FMOD.Studio.STOP_MODE.IMMEDIATE : global::FMOD.Studio.STOP_MODE.ALLOWFADEOUT),
-				"Failed to stop event instance.");
+				(p) => "Failed to stop event instance.");
 			return this;
 		}
 
 		public FmodEvent LoadMarkers()
 		{
 			_markers = FmodMarker.Load(this.EventPath);
-            _markersLoaded = true;
+			_markersLoaded = true;
 
-            return this;
+			return this;
 		}
 
 		public bool HasMarker(string marker)
 		{
-            if (!_markersLoaded)
-                LoadMarkers();
+			if (!_markersLoaded)
+				LoadMarkers();
 			return _markers != null && _markers.ContainsKey(marker);
 		}
 
@@ -233,13 +370,13 @@ namespace LoFiPeople.FMOD
 			if (!IsValid)
 				return this;
 
-            if (!_markersLoaded)
-                LoadMarkers();
+			if (!_markersLoaded)
+				LoadMarkers();
 
-            marker = marker.Trim();
+			marker = marker.Trim();
 			if (_markers == null)
 			{
-				UnityEngine.Debug.LogError("No markers available. Try calling LoadMarkers() first");
+				UnityEngine.Debug.LogError("[FMOD] No markers available. Try calling LoadMarkers() first");
 				return this;
 			}
 
@@ -249,7 +386,7 @@ namespace LoFiPeople.FMOD
 				this.TimeMilliseconds = ms;
 			}
 			else
-				UnityEngine.Debug.LogErrorFormat("Can't find marker named '{0}'", marker);
+				UnityEngine.Debug.LogError($"[FMOD] Can't find marker named '{marker}'");
 
 			return this;
 		}
@@ -258,13 +395,25 @@ namespace LoFiPeople.FMOD
 		{
 			get {
 				float val, fval;
-				Do(Instance.getParameterValue(name, out val, out fval), string.Format("Failed to get parameter '{0}'.", name));
+				Do(Instance.getParameterByName(name, out val, out fval), (p) => string.Format("Failed to get parameter '{0}'.", p), name);
 				return fval;
 			}
 			set
 			{
-				Do(Instance.setParameterValue(name, value), string.Format("Failed to set parameter '{0}'.", name));
+				Do(Instance.setParameterByName(name, value), (p) => string.Format("Failed to set parameter '{0}'.", p), name, FmodSeverity.Warning);
 			}
+		}
+
+		public float GetParamFinal(string name)
+		{
+			return this[name];
+		}
+
+		public float GetParamRaw(string name)
+		{
+			float val, fval;
+			Do(Instance.getParameterByName(name, out val, out fval), (p) => string.Format("Failed to get parameter '{0}'.", p), name);
+			return val;
 		}
 
 		public FmodEvent SetParam(string name, float value)
@@ -273,9 +422,14 @@ namespace LoFiPeople.FMOD
 			return this;
 		}
 
-		void Do(RESULT result, string error, FmodSeverity severity = FmodSeverity.Error)
+		void Do(RESULT result, Func<string,string> error, FmodSeverity severity = FmodSeverity.Error)
 		{
-			FmodUtils.Check(result, error, this.EventPath, severity);
+			FmodUtils.Check(result, error, null, this.EventPath, severity);
+		}
+
+		void Do(RESULT result, Func<string,string> error, string errorParam, FmodSeverity severity = FmodSeverity.Error)
+		{
+			FmodUtils.Check(result, error, errorParam, this.EventPath, severity);
 		}
 
 		public static void PlayOneShot(string eventPath)
@@ -290,13 +444,25 @@ namespace LoFiPeople.FMOD
 			ev.Start().Release();
 		}
 
+		public static void PlayAndReleaseWhenDone(string eventPath, Action<FmodEvent> init)
+		{
+			var ev = new FmodEvent(eventPath);
+			init(ev);
+			ev.OnPlayStateChanged += e =>
+			{
+				if (e.PlaybackState == PLAYBACK_STATE.STOPPING)
+					e.Release();
+			};
+			ev.Start();
+		}
+
 		public static void KillAllInTransform(Transform transform, bool withChildren)
 		{
 			MonoBehaviour[] scripts = withChildren ?
 				transform.GetComponentsInChildren<MonoBehaviour>(true) :
 				transform.GetComponents<MonoBehaviour>();
 
-			foreach(MonoBehaviour script in scripts)
+			foreach (MonoBehaviour script in scripts)
 			{
 				KillAllInScript(script);
 			}
@@ -315,11 +481,40 @@ namespace LoFiPeople.FMOD
 				)
 				;
 
-			foreach(FmodEvent ev in events)
-			{
-				if (ev != null && ev.IsValid)
-					ev.Stop(true).Release();
-			}
+			foreach (FmodEvent ev in events)
+				StopAndRelease(ev, true);
+		}
+
+		public static bool IsValidAndNotNull(FmodEvent ev)
+		{
+			return (ev != null && ev.IsValid);
+		}
+
+		public static bool IsValidAndPlaying(FmodEvent ev)
+		{
+			return IsValidAndNotNull(ev) && ev.PlaybackState != PLAYBACK_STATE.STOPPED;
+		}
+
+		public static bool Stop(FmodEvent ev, bool hard = false)
+		{
+			bool valid;
+			if (valid = IsValidAndNotNull(ev))
+				ev.Stop(hard);
+			return valid;
+		}
+
+		public static bool Release(FmodEvent ev)
+		{
+			bool valid;
+			if (valid = IsValidAndNotNull(ev))
+				ev.Release();
+			return valid;
+		}
+
+		public static bool StopAndRelease(FmodEvent ev, bool hard = false)
+		{
+			Stop(ev, hard);
+			return Release(ev);
 		}
 	}
 
@@ -347,13 +542,13 @@ namespace LoFiPeople.FMOD
 			var jsonAsset = Resources.Load(resourcePath);
 			if (jsonAsset == null)
 			{
-				//UnityEngine.Debug.LogErrorFormat("Could not find marker file Resources/{0}.json", resourcePath);
+				//UnityEngine.Debug.LogErrorFormat("[FMOD] Could not find marker file Resources/{0}.json", resourcePath);
 				return null;
 			}
 			return Load((TextAsset)jsonAsset);
 		}
 	}
-	
+
 	[Serializable]
 	public class FmodException : Exception
 	{
